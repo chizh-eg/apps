@@ -110,6 +110,16 @@ class Board(QWidget):
         self._close_anim = None
         self._undo = []
         self._editor = None
+        self._menu_open = False
+        self._redo = []
+        self._tab_close_arm = None
+        self._tab_close_t = 0.0
+        self._search_open = False
+        self._search_btns = []
+        self._search_edit = None
+        self._search_geom = None
+        self._search_results = []
+        self._cam_anim = None
         self.settings_file = Path.home() / "board_settings.json"
         try:
             sd = json.loads(self.settings_file.read_text(encoding="utf-8"))
@@ -177,22 +187,32 @@ class Board(QWidget):
                             "cam_x": self.cam_x, "cam_y": self.cam_y, "zoom": self.zoom}),
                 encoding="utf-8")
         except Exception: pass
+    def _dump(self):
+        return {"items": self.items, "connections": self.connections,
+                "background_drawings": self.bg_drawings, "board_content": self.board_content}
     def _snap(self):
-        self._undo.append(json.dumps({"items": self.items, "connections": self.connections,
-            "background_drawings": self.bg_drawings, "board_content": self.board_content},
-            ensure_ascii=False))
+        self._undo.append(json.dumps(self._dump(), ensure_ascii=False))
         if len(self._undo) > 30: self._undo.pop(0)
+        self._redo.clear()
     def _undo_do(self):
         if not self._undo: return
         self._close_editor(False)
-        oid = self.opened.get("id") if self.opened else None
-        d = json.loads(self._undo.pop())
-        self.tab["items"] = d["items"]; self.tab["connections"] = d["connections"]
-        self.tab["background_drawings"] = d["background_drawings"]
-        self.tab["board_content"] = d["board_content"]
-        self._bind_tab()
-        if oid:
-            self.opened = next((i for i in self.items if i["id"] == oid), None)
+        self._redo.append(json.dumps(self._dump(), ensure_ascii=False))
+        self._apply_state(json.loads(self._undo.pop()))
+    def _redo_do(self):
+        if not self._redo: return
+        self._close_editor(False)
+        self._undo.append(json.dumps(self._dump(), ensure_ascii=False))
+        self._apply_state(json.loads(self._redo.pop()))
+    def _apply_state(self, d):
+        self.items = d["items"]; self.connections = d["connections"]
+        self.bg_drawings = d["background_drawings"]; self.board_content = d["board_content"]
+        if self.tab is not None:
+            self.tab["items"] = self.items; self.tab["connections"] = self.connections
+            self.tab["background_drawings"] = self.bg_drawings
+            self.tab["board_content"] = self.board_content
+        oid = self.opened["id"] if self.opened else None
+        self.opened = next((i for i in self.items if i["id"] == oid), None) if oid else None
         self._open_anim = None; self._close_anim = None
         self._schedule_save(); self.update()
     def showEvent(self, e):
@@ -333,6 +353,8 @@ class Board(QWidget):
         if not multi:
             w.returnPressed.connect(lambda: self._close_editor(True))
         w.installEventFilter(self)
+        w.setContextMenuPolicy(Qt.CustomContextMenu)
+        w.customContextMenuRequested.connect(lambda pos, w=w: self._editor_menu(w, pos))
         zf = 1 if imm else self.zoom
         self._editor = {"w": w, "kind": kind, "ref": ref, "bx": bx, "by": by,
                         "bw": bw, "bh": bh, "fs": fs, "multi": multi, "imm": imm,
@@ -367,7 +389,8 @@ class Board(QWidget):
         ed = self._editor
         if ed and obj is ed["w"]:
             if ev.type() == QEvent.FocusOut:
-                QTimer.singleShot(0, lambda: self._close_editor(True))
+                if not self._menu_open:
+                    QTimer.singleShot(0, lambda: self._close_editor(True))
             elif ev.type() == QEvent.Wheel:
                 self._close_editor(True)
                 return True
@@ -376,7 +399,29 @@ class Board(QWidget):
                     self._close_editor(False); return True
                 if ed["multi"] and ev.key() == Qt.Key_Return and ev.modifiers() & Qt.ControlModifier:
                     self._close_editor(True); return True
+        se = self._search_edit
+        if se and obj is se and ev.type() == QEvent.KeyPress and ev.key() == Qt.Key_Escape:
+            self._close_search(); return True
         return super().eventFilter(obj, ev)
+    def _editor_menu(self, w, pos):
+        def has_sel():
+            try: return w.textCursor().hasSelection()
+            except Exception: return w.hasSelectedText()
+        m = self._styled_menu()
+        if has_sel():
+            m.addAction("Вырезать", w.cut)
+            m.addAction("Копировать", w.copy)
+        m.addAction("Вставить", w.paste)
+        m.addAction("Выбрать всё", w.selectAll)
+        def clear_sel():
+            try:
+                c = w.textCursor(); c.removeSelectedText(); w.setTextCursor(c)
+            except Exception: w.clear()
+        m.addAction("Очистить", clear_sel if has_sel() else w.clear)
+        self._menu_open = True
+        m.exec_(w.mapToGlobal(pos))
+        self._menu_open = False
+        w.setFocus()
 
     # ================= переносы / списки =================
     def _wrap_segs(self, segs, fs, max_w):
@@ -685,24 +730,26 @@ class Board(QWidget):
         ok = QPushButton("ОК"); ok.clicked.connect(dlg.accept); lay.addWidget(ok)
         dlg.exec_()
         self.setFocus()
-
     # ================= контент =================
     def _content_h(self, c):
         if c["type"] == "note": return c.get("h", 80)
         if c["type"] == "table": return c.get("h", 24 + len(c.get("rows", []))*26)
         rows, total, lfs = self._list_layout(c)
         return max(c.get("h", 0), total)
+
     def _hit_content(self, lst, x, y):
         for i in reversed(range(len(lst))):
             c = lst[i]
             if c["x"] <= x <= c["x"]+c["w"] and c["y"] <= y <= c["y"]+self._content_h(c):
                 return i, c
         return None, None
+
     def _hit_block(self, bx, by):
         for it in reversed(self.items):
             if it["x"] <= bx <= it["x"]+it["w"] and it["y"] <= by <= it["y"]+it["h"]:
                 return it
         return None
+
     def _hit_connection(self, bx, by):
         r = 8 / self.zoom
         for cn in self.connections:
@@ -713,6 +760,7 @@ class Board(QWidget):
             bx2, by2 = b["x"]+b["w"]/2, b["y"]+b["h"]/2
             if dist_seg(bx, by, ax, ay, bx2, by2) < r: return cn
         return None
+
     def _add_content(self, target, kind, cx=None, cy=None):
         if cx is None: cx, cy = self.s2b(self.width()/2, self.height()/2)
         if kind == "note":
@@ -728,6 +776,7 @@ class Board(QWidget):
         self._snap(); target.append(d)
         self._anim["c:"+d["aid"]] = time.time()
         self._schedule_save(); self.update()
+
     def _edit_content(self, lst, idx, c, lx, ly, imm=False):
         if c["type"] == "note":
             self._inline_edit("note", c, c["x"], c["y"], c["w"], self._content_h(c),
@@ -749,8 +798,10 @@ class Board(QWidget):
                 self._inline_edit("item", items[i], c["x"]+24, c["y"]+R["y"],
                                   c["w"]-30, R["h"], items[i]["text"], False,
                                   c.get("fontSize", 13)*0.9, imm)
+
     def _rename_block(self, it, imm=False):
         self._inline_edit("title", it, it["x"], it["y"], it["w"], 30, it["title"], False, 13, imm)
+
     def _hit_btn(self, x, y, lst):
         for b in reversed(lst):
             if b["x"] <= x <= b["x"]+b["w"] and b["y"] <= y <= b["y"]+b["h"]:
@@ -760,10 +811,14 @@ class Board(QWidget):
     # ================= события =================
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            if self._users_open: self._close_users(); return
+            if self._search_open: self._close_search(); return
             if self.opened: self._close_block(); return
-        if e.modifiers() & Qt.ControlModifier and e.key() == Qt.Key_Z:
-            self._undo_do(); return
+        if e.modifiers() & Qt.ControlModifier:
+            if e.key() == Qt.Key_Z:
+                self._redo_do() if (e.modifiers() & Qt.ShiftModifier) else self._undo_do(); return
+            if e.key() == Qt.Key_Y: self._redo_do(); return
+            if e.key() == Qt.Key_0: self._fit_all(); return
+            if e.key() == Qt.Key_F: self._toggle_search(); return
         k = e.text().lower()
         if k in ("1", "h", "п"): self.tool = "pan"
         elif k in ("2", "b", "и"): self.tool = "draw"
@@ -801,6 +856,15 @@ class Board(QWidget):
                                             and self._user_rect[1] <= y <= self._user_rect[3]):
                     self._close_users()
             return
+        # поиск: кнопка-лупа и результаты
+        sg = self._search_geom
+        if sg and (x-sg[0])**2 + (y-sg[1])**2 <= (sg[2]+4)**2:
+            self._toggle_search(); return
+        if self._search_open:
+            for b in self._search_btns:
+                if b["x"] <= x <= b["x"]+b["w"] and b["y"] <= y <= b["y"]+b["h"]:
+                    self._goto(b["r"]); return
+            self._close_search(); return
         # вкладки
         if self._tab_btns:
             for tb in self._tab_btns:
@@ -810,7 +874,15 @@ class Board(QWidget):
                         self._new_tab(); return
                 elif tb["x"] <= x <= tb["x"]+tb["w"] and tb["y"] <= y <= tb["y"]+tb["h"]:
                     if (x-tb["cx"])**2 + (y-tb["cy"])**2 <= tb["cr"]**2:
-                        self._close_tab(tb["tab"]); return
+                        self._tab_close_t = time.time()
+                        if self._tab_close_arm == tb["tab"]["id"]:
+                            self._tab_close_arm = None
+                            self._close_tab(tb["tab"])
+                        else:
+                            self._tab_close_arm = tb["tab"]["id"]
+                            self.update()
+                        return
+                    self._tab_close_arm = None
                     self._switch_tab(tb["tab"]); return
             if self._bar_h and y < self._bar_h: return
         b = self._hit_btn(x, y, self._buttons)
@@ -930,9 +1002,10 @@ class Board(QWidget):
 
     def mouseDoubleClickEvent(self, e):
         x, y = e.x(), e.y()
-        if self._tab_btns:
+        if self._tab_btns and time.time() - self._tab_close_t >= 0.5:
             for tb in self._tab_btns:
-                if not tb.get("plus") and tb["x"] <= x <= tb["x"]+tb["w"] and tb["y"] <= y <= tb["y"]+tb["h"]:
+                if not tb.get("plus") and tb["tab"] in self.tabs and \
+                   tb["x"] <= x <= tb["x"]+tb["w"] and tb["y"] <= y <= tb["y"]+tb["h"]:
                     self._inline_edit("tab", tb["tab"], tb["x"]+4, tb["y"]+3, tb["w"]-20, tb["h"]-6,
                                       tb["tab"]["title"], False, 10*self.ui_scale, False, fixed=True)
                     return
@@ -974,6 +1047,31 @@ class Board(QWidget):
         self._save_settings()
         self.update()
 
+    def _fit_all(self):
+        xs = []; ys = []
+        for it in self.items:
+            xs += [it["x"], it["x"]+it["w"]]; ys += [it["y"], it["y"]+it["h"]]
+        for c in self.board_content:
+            xs += [c["x"], c["x"]+c["w"]]; ys += [c["y"], c["y"]+self._content_h(c)]
+        for d in self.bg_drawings:
+            for q in d["points"]: xs.append(q[0]); ys.append(q[1])
+        if not xs: return
+        m = 80
+        minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+        W, H = self.width(), self.height()
+        self.zoom = max(0.1, min(2.0, min(W/(maxx-minx+2*m), H/(maxy-miny+2*m))))
+        self.cam_x = W/2 - (minx+maxx)/2*self.zoom
+        self.cam_y = H/2 - (miny+maxy)/2*self.zoom
+        self._save_settings(); self.update()
+
+    def _dup_block(self, it):
+        import copy
+        self._snap()
+        nd = copy.deepcopy(it); nd["id"] = str(uuid.uuid4()); nd["x"] += 40; nd["y"] += 40
+        self.items.append(nd)
+        self._anim["b:"+nd["id"]] = time.time()
+        self._schedule_save(); self.update()
+
     # ================= меню =================
     def _styled_menu(self):
         m = QMenu(self)
@@ -986,11 +1084,13 @@ class Board(QWidget):
         """ % (self.P["panel"], self.P["panel_out"], self.P["text"], int(16*s), int(6*s),
                int(10*s), self.P["grid"], self.P["panel_out"]))
         return m
+
     def _exec_menu(self, m, pos):
         acts = m.actions()
         for i in range(len(acts)-1, 0, -1):
             m.insertSeparator(acts[i])
         m.exec_(pos)
+
     def contextMenuEvent(self, e):
         x, y = e.x(), e.y()
         if self._users_open: return
@@ -1017,6 +1117,7 @@ class Board(QWidget):
             m.addAction("Открыть", lambda: self._open_block(it))
             m.addAction("Переименовать", lambda: self._rename_block(it, False))
             m.addAction("Связать", lambda: (setattr(self, "tool", "connect"), setattr(self, "conn_start", it["id"]), self.update()))
+            m.addAction("Дублировать", lambda: self._dup_block(it))
             m.addAction("Удалить", lambda: self._del_block(it))
             self._exec_menu(m, e.globalPos()); return
         hi, c = self._hit_content(self.board_content, bx, by)
@@ -1027,13 +1128,18 @@ class Board(QWidget):
         cn = self._hit_connection(bx, by)
         if cn:
             m.addAction("Удалить связь", lambda: (self._snap(), self.connections.remove(cn), self._schedule_save(), self.update()))
-            self._exec_menu(m, e.globalPos())
+            self._exec_menu(m, e.globalPos()); return
+        m2 = self._styled_menu()
+        m2.addAction("Вместить всё", self._fit_all)
+        self._exec_menu(m2, e.globalPos())
+
     def _del_block(self, it):
         self._snap()
         self.items.remove(it)
         self.connections = [c for c in self.connections if c["from"] != it["id"] and c["to"] != it["id"]]
         if self.opened is it: self.opened = None
         self._schedule_save(); self.update()
+
     def _content_menu(self, m, c, idx, lst, lx=None, ly=None):
         m.addAction("Переименовать", lambda: self._rename_content(c))
         m.addAction("Шрифт +", lambda: (c.__setitem__("fontSize", min(30, c.get("fontSize",13)+1)), self._schedule_save(), self.update()))
@@ -1073,6 +1179,7 @@ class Board(QWidget):
                 m.addAction("Удалить столбец", del_col)
                 m.addAction("Свойства таблицы…", lambda: self._table_props(c))
         m.addAction("Удалить", lambda: (self._snap(), lst.pop(idx), self._schedule_save(), self.update()))
+
     def _table_props(self, c):
         dlg = QDialog(self); dlg.setWindowTitle("Свойства таблицы")
         dlg.setStyleSheet("QDialog{background:%s} QLabel{color:%s;background:transparent}" % (self.P["panel"], self.P["text"]))
@@ -1100,12 +1207,15 @@ class Board(QWidget):
             c["h"] = 24 + R*26
             c["w"] = max(150, C*70)
             self._schedule_save(); self.update()
+
     def _rename_content(self, c):
         v = self._text_dialog("Название", c.get("title", ""))
         if v is not None: c["title"] = v.strip(); self._schedule_save(); self.update()
+
     def _erase(self, lst, x, y, r):
         lst[:] = [p for p in lst if not any(math.hypot(q[0]-x, q[1]-y) < r for q in p["points"])]
         self._schedule_save()
+
     def _run_btn(self, bid):
         if bid == "pan": self.tool = "pan"; self.conn_start = None
         elif bid == "draw": self.tool = "draw"; self.conn_start = None
@@ -1145,6 +1255,7 @@ class Board(QWidget):
         elif bid == "del": self._del_block(self.opened)
         elif bid == "close": self._close_block()
         self.update()
+
     def _zoom_by(self, f):
         cx, cy = self.width()/2, self.height()/2
         bx, by = self.s2b(cx, cy)
@@ -1200,14 +1311,15 @@ class Board(QWidget):
             self.data_file.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
             self.opened = None; self._undo = []
             self._load_board(); self.update()
+
     def _show_export_menu(self):
-        from PyQt5.QtCore import QPoint
         m = self._styled_menu()
         m.addAction("Экспорт JSON", lambda: self._export("json"))
         m.addAction("Экспорт XML", lambda: self._export("xml"))
         m.addAction("Экспорт ODS", self._export_ods)
         m.addAction("Экспорт PNG", self._export_png)
         self._exec_menu(m, QCursor.pos())
+
     def _export(self, fmt):
         p, _ = QFileDialog.getSaveFileName(self, "Экспорт", "board_data." + fmt, fmt.upper() + " (*." + fmt + ")")
         if not p: return
@@ -1227,6 +1339,7 @@ class Board(QWidget):
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"tabs": self.tabs, "active": self.tab["id"]}, f, ensure_ascii=False, indent=2)
         QMessageBox.information(self, "Готово", "Сохранено:\n" + p)
+
     def _export_ods(self):
         p, _ = QFileDialog.getSaveFileName(self, "Экспорт ODS", "board.ods", "ODS (*.ods)")
         if not p: return
@@ -1277,6 +1390,7 @@ class Board(QWidget):
             QMessageBox.information(self, "Готово", "Сохранено:\n" + p)
         except Exception as ex:
             QMessageBox.warning(self, "Ошибка", str(ex))
+
     def _export_png(self):
         p, _ = QFileDialog.getSaveFileName(self, "Экспорт PNG", "board.png", "PNG (*.png)")
         if not p: return
@@ -1288,6 +1402,7 @@ class Board(QWidget):
         pa.end()
         img.save(p, "PNG")
         QMessageBox.information(self, "Готово", "Сохранено:\n" + p)
+
     def _clear_drawings(self):
         self._snap()
         self.bg_drawings.clear()
@@ -1333,6 +1448,7 @@ class Board(QWidget):
         tb = (p[0], hdr[3], p[2], hdr[3]+42*s)
         area = (p[0], tb[3], p[2], p[3])
         return p, hdr, tb, area
+
     def _imm_press(self, x, y):
         p, hdr, tb, area = self._imm_rects()
         if not (area[1] <= y <= area[3] and area[0] <= x <= area[2]): return
@@ -1355,6 +1471,7 @@ class Board(QWidget):
         if self.imm_tool == "erase":
             self._snap(); self._erase(self.opened["drawings"], lx, ly, 15); self.update(); return
         self.pan_start = (x, y)
+
     def _imm_move(self, x, y):
         p, hdr, tb, area = self._imm_rects()
         lx, ly = x-area[0]-self.imm_cam[0], y-area[1]-self.imm_cam[1]
@@ -1377,6 +1494,7 @@ class Board(QWidget):
             self.imm_cam[0] += x-self.pan_start[0]; self.imm_cam[1] += y-self.pan_start[1]
             self._clamp_imm_cam(area)
             self.pan_start = (x, y); self.update()
+
     def _imm_release(self, e=None):
         if self.imm_drawing and len(self.imm_path) > 1:
             self._snap()
@@ -1385,12 +1503,14 @@ class Board(QWidget):
         self.imm_drawing = False; self.imm_path = []
         self.drag = self.resize = self.pan_start = None
         self.update()
+
     def _imm_double(self, x, y):
         p, hdr, tb, area = self._imm_rects()
         if not (area[1] <= y <= area[3] and area[0] <= x <= area[2]): return
         lx, ly = x-area[0]-self.imm_cam[0], y-area[1]-self.imm_cam[1]
         hi, c = self._hit_content(self.opened["content"], lx, ly)
         if c: self._edit_content(self.opened["content"], hi, c, lx-c["x"], ly-c["y"], True)
+
     def _clamp_imm_cam(self, area):
         aw, ah = area[2]-area[0], area[3]-area[1]
         M = 600.0
@@ -1408,13 +1528,13 @@ class Board(QWidget):
         else: loY, hiY = min(0.0, ah-maxY), max(0.0, -minY)
         self.imm_cam[0] = max(loX, min(hiX, self.imm_cam[0]))
         self.imm_cam[1] = max(loY, min(hiY, self.imm_cam[1]))
-
     # ================= отрисовка =================
     def paintEvent(self, ev):
         try:
             self._paint()
         except Exception:
             traceback.print_exc()
+
     def _paint(self):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -1423,20 +1543,45 @@ class Board(QWidget):
         self._buttons, self._imm_btns, self._tab_btns, self._user_btns = [], [], [], []
         W, H = self.width(), self.height()
         s = self.ui_scale; z = self.zoom
-        # панель вкладок: слайд сверху, прижата к кромке
+        if self._search_open and self._search_edit:
+            sw = min(int(420*s), int(W*0.6))
+            self._search_edit.setGeometry(int(W/2 - sw/2), int(self._bar_h + 8), sw, int(28*s))
+        ca = self._cam_anim
+        if ca:
+            k = min(1, (time.time()-ca["t0"])/0.3)
+            e = 1-(1-k)**3
+            self.zoom = ca["fz"] + (ca["tz"]-ca["fz"])*e
+            self.cam_x = ca["fx"] + (ca["tx"]-ca["fx"])*e
+            self.cam_y = ca["fy"] + (ca["ty"]-ca["fy"])*e
+            if k >= 1:
+                self._cam_anim = None; self._save_settings()
+            else:
+                self._need_anim = True
+            z = self.zoom
+        # панель вкладок: слайд, прижата к кромке
         bar_want = len(self.tabs) > 1
-        if bar_want and not self._tab_bar_visible:
-            self._tab_bar_visible = True
-            self._tab_bar_anim = {"t0": time.time()}
-        if not bar_want:
-            self._tab_bar_visible = False; self._tab_bar_anim = None
+        if self.perf:
+            self._tab_bar_visible = bar_want
+            self._tab_bar_anim = None
+        else:
+            if bar_want and not self._tab_bar_visible:
+                self._tab_bar_visible = True
+                self._tab_bar_anim = {"t0": time.time(), "opening": True}
+            if not bar_want and self._tab_bar_visible and not self._tab_bar_anim:
+                self._tab_bar_anim = {"t0": time.time(), "opening": False}
         slide = 1.0
         if self._tab_bar_anim:
             k = min(1, (time.time()-self._tab_bar_anim["t0"])/0.25)
-            slide = 1-(1-k)**3
-            if k >= 1: self._tab_bar_anim = None
-            else: self._need_anim = True
-        self._bar_h = 30*s if bar_want else 0
+            e = 1-(1-k)**3
+            slide = e if self._tab_bar_anim["opening"] else 1-e
+            if k >= 1:
+                if not self._tab_bar_anim["opening"]:
+                    self._tab_bar_visible = False
+                self._tab_bar_anim = None
+            else:
+                self._need_anim = True
+        bar_show = bar_want or self._tab_bar_visible
+        self._bar_h = 30*s if bar_show else 0
         self._top_off = self._bar_h * slide
         self._draw_world(p)
         if self.opened:
@@ -1445,7 +1590,10 @@ class Board(QWidget):
         if not self.opened:
             try: self._draw_tabs(p, W, s, -self._bar_h*(1-slide), slide)
             except Exception: traceback.print_exc()
-            try: self._draw_panels(p, W, H, s, z, self._top_off)
+            try:
+                self._draw_panels(p, W, H, s, z, self._top_off)
+                if self._search_open:
+                    self._draw_search(p, W, s)
             except Exception: traceback.print_exc()
         if self._users_open or self._users_anim:
             try: self._draw_users(p, W, H, s)
@@ -1493,8 +1641,7 @@ class Board(QWidget):
                     if hx2 + hw > W - 8:
                         hx2 = sx; hy2 = sy + shd + 8
                     ed["hint"].move(int(hx2), int(hy2)); ed["hint"].show()
-        # цикл перерисовки ТОЛЬКО пока идёт анимация
-        if self._need_anim or self._anim or self._open_anim or self._close_anim:
+        if self._need_anim or self._anim or self._open_anim or self._close_anim or self._cam_anim:
             self.update()
 
     def _draw_world(self, p):
@@ -1540,18 +1687,25 @@ class Board(QWidget):
         self._tab_btns = []
         if self.perf:
             slide = 1.0; self._tab_bar_anim = None; self._tab_anim = {}
+        # ---------- режим без панели: поиск ПОД плюсом ----------
         if not self._tab_bar_visible:
             cx0, cy0 = 12*s + 68*s + 20*s, 16*s
             self._plus_geom = (cx0, cy0, 11*s)
             self._tab_btns.append({"plus": True, "cx": cx0, "cy": cy0, "r": 11*s})
             self._draw_plus(p, cx0, cy0, 11*s, s)
+            sx0, sy0 = cx0, cy0 + 24*s
+            self._search_geom = (sx0, sy0, 11*s)
+            self._draw_search_btn(p, sx0, sy0, 11*s, s)
             return
+        # ---------- панель видима: поиск СПРАВА от плюса ----------
         p.setPen(Qt.NoPen); p.setBrush(QColor(self.P["panel_out"]))
         p.drawRect(QRectF(0, off, W, bar_h))
         plus_w = 26*s
+        sx0 = W - plus_w/2 - 6*s      # поиск — крайний справа
+        cx0 = sx0 - 24*s              # плюс — слева от поиска
+        cy0 = off + bar_h/2
         clip_x0 = 8*s
-        clip_x1 = W - plus_w - 12*s
-        # вкладки со скроллом внутри клипа
+        clip_x1 = cx0 - 12*s
         p.save()
         p.setClipRect(QRectF(clip_x0, off, clip_x1-clip_x0, bar_h))
         x = clip_x0 - self._tabs_scroll
@@ -1563,9 +1717,12 @@ class Board(QWidget):
                 e = 1-(1-k)**3
                 if k >= 1: del self._tab_anim[t["id"]]
                 else: self._need_anim = True
-            tw_full = min(170*s, max(80*s, 16*s + self.mw(t["title"], 10*s) + 30*s))
+            tw_full = min(170*s, max(80*s, 16*s + self.mw(t["title"], 10*s) + 36*s))
             tw = tw_full * e
+            armed = self._tab_close_arm == t["id"]
             active = t is self.tab
+            fill = "#1E88E5" if armed else (self.P["panel"] if active else self.P["body"])
+            tcol = "#FFFFFF" if armed else (self.P["text"] if active else self.P["label"])
             path = QPainterPath()
             path.moveTo(x, off + bar_h + 2)
             path.lineTo(x, off + 3*s + 8*s)
@@ -1574,18 +1731,16 @@ class Board(QWidget):
             path.arcTo(x + tw - 16*s, off + 3*s, 16*s, 16*s, 90, -90)
             path.lineTo(x + tw, off + bar_h + 2)
             path.closeSubpath()
-            p.setBrush(QColor(self.P["panel"] if active else self.P["body"]))
-            p.setPen(Qt.NoPen); p.drawPath(path)
+            p.setBrush(QColor(fill)); p.setPen(Qt.NoPen); p.drawPath(path)
             p.save(); p.setClipRect(QRectF(0, off, W, bar_h-1))
             p.setPen(QPen(QColor(self.P["panel_out"]), 1)); p.setBrush(Qt.NoBrush)
             p.drawPath(path); p.restore()
             if tw > 40*s:
-                p.setFont(self.font(10*s)); p.setPen(QColor(self.P["text"] if active else self.P["label"]))
-                p.setBrush(Qt.NoBrush)
-                p.drawText(QRectF(x+8*s, off+3*s, tw-16*s-14*s, bar_h-3*s), Qt.AlignLeft|Qt.AlignVCenter,
-                           self.trunc(t["title"], tw-30*s, 10*s))
+                p.setFont(self.font(10*s)); p.setPen(QColor(tcol)); p.setBrush(Qt.NoBrush)
+                p.drawText(QRectF(x+8*s, off+3*s, tw-16*s-20*s, bar_h-3*s), Qt.AlignLeft|Qt.AlignVCenter,
+                           self.trunc(t["title"], tw-36*s, 10*s))
                 cxx = x + tw - 12*s
-                p.setPen(QPen(QColor(self.P["text"]), max(1, 1.2*s), Qt.SolidLine, Qt.RoundCap))
+                p.setPen(QPen(QColor(tcol), max(1, 1.2*s), Qt.SolidLine, Qt.RoundCap))
                 p.drawLine(QPointF(cxx-3*s, off+bar_h/2-3*s), QPointF(cxx+3*s, off+bar_h/2+3*s))
                 p.drawLine(QPointF(cxx-3*s, off+bar_h/2+3*s), QPointF(cxx+3*s, off+bar_h/2-3*s))
                 self._tab_btns.append({"tab": t, "x": x, "y": off, "w": tw, "h": bar_h,
@@ -1596,25 +1751,27 @@ class Board(QWidget):
         self._tabs_content_w = (end_x + self._tabs_scroll) - clip_x0
         maxs = max(0, self._tabs_content_w - (clip_x1 - clip_x0))
         if self._tabs_scroll > maxs: self._tabs_scroll = maxs
-        # «+» закреплён справа, вне клипа
-        cx0, cy0 = W - plus_w/2 - 6*s, off + bar_h/2
         self._plus_geom = (cx0, cy0, 9*s)
         self._tab_btns.append({"plus": True, "cx": cx0, "cy": cy0, "r": 9*s})
-        self._draw_plus(p, cx0, cy0, 9*s, s)
+        self._search_geom = (sx0, cy0, 9*s)
+        self._draw_search_btn(p, sx0, cy0, 9*s, s)
+        self._draw_plus(p, cx0, cy0, 9*s, s, True)
 
-    def _draw_plus(self, p, cx0, cy0, r, s):
+    def _draw_plus(self, p, cx0, cy0, r, s, left=False):
+        label = "вкладка"
+        lw = self.mw(label, 10*s)
         if self._plus_hover:
-            label = "вкладка"
-            lw = self.mw(label, 10*s)
             pill_w = 2*r + 8*s + lw + 8*s
+            x0 = (cx0 + r - pill_w) if left else (cx0 - r)
             p.setBrush(QColor(self.P["panel"]))
             p.setPen(QPen(QColor(self.P["panel_out"]), 1))
-            p.drawRoundedRect(QRectF(cx0-r, cy0-r, pill_w, 2*r), r, r)
+            p.drawRoundedRect(QRectF(x0, cy0-r, pill_w, 2*r), r, r)
             p.setPen(QPen(QColor(self.P["text"]), max(1, 1.4*s), Qt.SolidLine, Qt.RoundCap))
             p.drawLine(QPointF(cx0-3.5*s, cy0), QPointF(cx0+3.5*s, cy0))
             p.drawLine(QPointF(cx0, cy0-3.5*s), QPointF(cx0, cy0+3.5*s))
-            p.setFont(self.font(10*s)); p.setPen(QColor(self.P["text"])); p.setBrush(Qt.NoBrush)
-            p.drawText(QRectF(cx0+r+2*s, cy0-r, lw+8*s, 2*r), Qt.AlignLeft|Qt.AlignVCenter, label)
+            p.setFont(self.font(10*s)); p.setBrush(Qt.NoBrush)
+            tx = (x0 + 6*s) if left else (cx0 + r + 2*s)
+            p.drawText(QRectF(tx, cy0-r, lw+8*s, 2*r), Qt.AlignLeft|Qt.AlignVCenter, label)
         else:
             p.setBrush(QColor(self.P["panel"]))
             p.setPen(QPen(QColor(self.P["panel_out"]), 1))
@@ -1776,88 +1933,6 @@ class Board(QWidget):
             p.setFont(f); p.setPen(QColor(fg)); p.setBrush(Qt.NoBrush)
             p.drawText(QRectF(x, y, w, h), Qt.AlignCenter, txt)
 
-    def _icon(self, p, kind, x, y, sz, col):
-        p.setPen(QPen(QColor(col), max(1.0, sz*0.08), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        p.setBrush(Qt.NoBrush)
-        cx, cy = x+sz/2, y+sz/2
-        r = sz*0.30; a = sz*0.13
-        if kind == "pan":
-            p.drawLine(QPointF(cx-r, cy), QPointF(cx+r, cy)); p.drawLine(QPointF(cx, cy-r), QPointF(cx, cy+r))
-            p.drawLine(QPointF(cx-r, cy), QPointF(cx-r+a, cy-a)); p.drawLine(QPointF(cx-r, cy), QPointF(cx-r+a, cy+a))
-            p.drawLine(QPointF(cx+r, cy), QPointF(cx+r-a, cy-a)); p.drawLine(QPointF(cx+r, cy), QPointF(cx+r-a, cy+a))
-            p.drawLine(QPointF(cx, cy-r), QPointF(cx-a, cy-r+a)); p.drawLine(QPointF(cx, cy-r), QPointF(cx+a, cy-r+a))
-            p.drawLine(QPointF(cx, cy+r), QPointF(cx-a, cy+r-a)); p.drawLine(QPointF(cx, cy+r), QPointF(cx+a, cy+r-a))
-        elif kind == "draw":
-            p.drawLine(QPointF(cx-r, cy+r), QPointF(cx+r*0.5, cy-r*0.5))
-            p.drawLine(QPointF(cx+r*0.5, cy-r*0.5), QPointF(cx+r, cy-r))
-            p.setBrush(QBrush(QColor(col))); p.drawEllipse(QPointF(cx-r, cy+r), sz*0.08, sz*0.08); p.setBrush(Qt.NoBrush)
-        elif kind == "erase":
-            path = QPainterPath()
-            path.moveTo(cx-r, cy+r*0.5); path.lineTo(cx-r*0.3, cy-r*0.7); path.lineTo(cx+r, cy+r*0.1)
-            path.lineTo(cx+r*0.3, cy+r*0.9); path.closeSubpath()
-            p.drawPath(path)
-        elif kind == "connect":
-            p.drawEllipse(QPointF(cx-r, cy), sz*0.10, sz*0.10); p.drawEllipse(QPointF(cx+r, cy), sz*0.10, sz*0.10)
-            p.drawLine(QPointF(cx-r+sz*0.10, cy), QPointF(cx+r-sz*0.10, cy))
-        elif kind == "color":
-            p.drawEllipse(QPointF(cx, cy), r, r)
-            p.save(); p.setClipRect(QRectF(cx-r, cy-r, r, 2*r)); p.setBrush(QBrush(QColor(col)))
-            p.drawEllipse(QPointF(cx, cy), r, r); p.restore(); p.setBrush(Qt.NoBrush)
-        elif kind == "export":
-            p.drawLine(QPointF(cx-r, cy), QPointF(cx+r*0.5, cy))
-            p.drawLine(QPointF(cx+r*0.1, cy-r*0.5), QPointF(cx+r*0.6, cy)); p.drawLine(QPointF(cx+r*0.1, cy+r*0.5), QPointF(cx+r*0.6, cy))
-            p.drawLine(QPointF(cx+r, cy-r*0.7), QPointF(cx+r, cy+r*0.7))
-        elif kind == "import":
-            p.drawLine(QPointF(cx+r, cy), QPointF(cx-r*0.5, cy))
-            p.drawLine(QPointF(cx-r*0.1, cy-r*0.5), QPointF(cx-r*0.6, cy)); p.drawLine(QPointF(cx-r*0.1, cy+r*0.5), QPointF(cx-r*0.6, cy))
-            p.drawLine(QPointF(cx-r, cy-r*0.7), QPointF(cx-r, cy+r*0.7))
-        elif kind == "minus":
-            p.drawLine(QPointF(cx-r*0.7, cy), QPointF(cx+r*0.7, cy))
-        elif kind == "plus":
-            p.drawLine(QPointF(cx-r*0.7, cy), QPointF(cx+r*0.7, cy)); p.drawLine(QPointF(cx, cy-r*0.7), QPointF(cx, cy+r*0.7))
-        elif kind == "ui":
-            for i, yy in enumerate([cy-r*0.6, cy, cy+r*0.6]):
-                p.drawLine(QPointF(cx-r, yy), QPointF(cx+r, yy))
-                p.setBrush(QBrush(QColor(col))); p.drawEllipse(QPointF(cx+(-0.4+0.4*i)*r, yy), sz*0.08, sz*0.08); p.setBrush(Qt.NoBrush)
-        elif kind == "theme":
-            p.drawEllipse(QPointF(cx, cy), r, r)
-            p.save(); p.setClipRect(QRectF(cx, cy-r, r, 2*r)); p.setBrush(QBrush(QColor(col)))
-            p.drawEllipse(QPointF(cx, cy), r, r); p.restore(); p.setBrush(Qt.NoBrush)
-        elif kind == "user":
-            p.drawEllipse(QPointF(cx, cy-r*0.4), r*0.45, r*0.45)
-            p.drawArc(QRectF(cx-r*0.8, cy-r*0.1, 1.6*r, 1.3*r), 0, 180*16)
-        elif kind == "gear":
-            p.drawEllipse(QPointF(cx, cy), r*0.55, r*0.55)
-            for ang in range(0, 360, 45):
-                dx, dy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
-                p.drawLine(QPointF(cx+dx*r*0.75, cy+dy*r*0.75), QPointF(cx+dx*r, cy+dy*r))
-        elif kind == "lightning":
-            p.setBrush(QBrush(QColor(col)))
-            path = QPainterPath()
-            path.moveTo(cx+r*0.2, cy-r); path.lineTo(cx-r*0.6, cy+r*0.1); path.lineTo(cx-r*0.1, cy+r*0.1)
-            path.lineTo(cx-r*0.3, cy+r); path.lineTo(cx+r*0.7, cy-r*0.2); path.lineTo(cx+r*0.1, cy-r*0.2)
-            path.closeSubpath()
-            p.drawPath(path); p.setBrush(Qt.NoBrush)
-        elif kind == "block":
-            p.drawRoundedRect(QRectF(cx-r, cy-r*0.8, 2*r, 1.6*r), 3, 3)
-            p.drawLine(QPointF(cx-r, cy-r*0.3), QPointF(cx+r, cy-r*0.3))
-        elif kind == "note":
-            p.drawRoundedRect(QRectF(cx-r*0.8, cy-r, 1.6*r, 2*r), 2, 2)
-            p.drawLine(QPointF(cx-r*0.5, cy-r*0.4), QPointF(cx+r*0.5, cy-r*0.4))
-            p.drawLine(QPointF(cx-r*0.5, cy), QPointF(cx+r*0.5, cy))
-            p.drawLine(QPointF(cx-r*0.5, cy+r*0.4), QPointF(cx+r*0.2, cy+r*0.4))
-        elif kind == "table":
-            p.drawRect(QRectF(cx-r, cy-r*0.8, 2*r, 1.6*r))
-            p.drawLine(QPointF(cx-r, cy-r*0.2), QPointF(cx+r, cy-r*0.2)); p.drawLine(QPointF(cx-r, cy+r*0.4), QPointF(cx+r, cy+r*0.4))
-            p.drawLine(QPointF(cx-r*0.3, cy-r*0.8), QPointF(cx-r*0.3, cy+r*0.8)); p.drawLine(QPointF(cx+r*0.3, cy-r*0.8), QPointF(cx+r*0.3, cy+r*0.8))
-        elif kind == "list":
-            for yy in [cy-r*0.6, cy+r*0.1, cy+r*0.8]:
-                p.drawRect(QRectF(cx-r, yy-sz*0.06, sz*0.12, sz*0.12))
-                p.drawLine(QPointF(cx-r*0.4, yy), QPointF(cx+r, yy))
-        elif kind == "clear":
-            p.drawLine(QPointF(cx-r*0.7, cy-r*0.7), QPointF(cx+r*0.7, cy+r*0.7))
-            p.drawLine(QPointF(cx-r*0.7, cy+r*0.7), QPointF(cx+r*0.7, cy-r*0.7))
-
     def _label(self, p, x, y, w, h, text, size):
         f = self.font(size)
         txt = QFontMetrics(f).elidedText(text, Qt.ElideRight, int(w-2))
@@ -1947,17 +2022,18 @@ class Board(QWidget):
 
     def _draw_settings(self, p, rx, ry, s, bs, pad, row, label_h):
         if not self._settings_open: return
+        we = 1.0; bo = 1.0
         anim = self._settings_anim
-        if anim:
+        if anim and not self.perf:
             k = min(1, (time.time()-anim["t0"])/0.4)
             if k >= 1:
-                self._settings_anim = None; we = 1.0; bo = 1.0
+                self._settings_anim = None
             else:
                 we = 1-(1-min(1, k/0.6))**3
                 bo = max(0.0, min(1.0, (k-0.6)/0.4))
                 self._need_anim = True
-        else:
-            we = 1.0; bo = 1.0
+        elif anim:
+            self._settings_anim = None
         show_btns = bo > 0
         sbtns = [("user", "user", "Польз.", "#B0BEC5"), ("theme", "theme", "Тема", "#FFE0B2"),
                  ("import", "import", "Импорт", "#D1C4E9"), ("export", "export", "Экспорт", "#D1C4E9"),
@@ -1982,11 +2058,6 @@ class Board(QWidget):
                 self._label(p, xx, y0+pad+bs, sbw, label_h, lab, 8*s)
                 xx += sbw + gap_s
             p.restore()
-
-        if self.perf:
-            self._settings_anim = None
-            we = 1.0; bo = 1.0
-        # иначе существующая логика we/bo
 
     def _draw_users(self, p, W, H, s):
         if not self._users_open:
@@ -2051,6 +2122,84 @@ class Board(QWidget):
             p.restore()
         p.restore()
 
+    # ---------- поиск ----------
+    def _draw_search_btn(self, p, cx, cy, r, s):
+        p.setBrush(QColor(self.P["panel"]))
+        p.setPen(QPen(QColor(self.P["panel_out"]), 1))
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        p.setPen(QPen(QColor(self.P["text"]), max(1, 1.3*s), Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(cx-1.5*s, cy-1.5*s), r*0.4, r*0.4)
+        p.drawLine(QPointF(cx+1.5*s, cy+1.5*s), QPointF(cx+r*0.6, cy+r*0.6))
+
+    def _toggle_search(self):
+        if self._search_open:
+            self._close_search(); return
+        if self._search_edit is None:
+            le = QLineEdit(self)
+            le.setPlaceholderText("Поиск…")
+            le.setStyleSheet("background:%s; color:%s; border:2px solid #1E88E5; border-radius:8px; padding:4px;" % (self.P["body"], self.P["text"]))
+            le.textChanged.connect(self._on_search)
+            le.installEventFilter(self)
+            self._search_edit = le
+        s = self.ui_scale
+        w = 420*s
+        self._search_edit.show(); self._search_edit.setFocus()
+        self._search_open = True
+        self.update()
+
+    def _close_search(self):
+        self._search_open = False
+        if self._search_edit: self._search_edit.hide()
+        self._search_btns = []
+        self.setFocus(); self.update()
+
+    def _on_search(self, text):
+        t = text.strip().lower()
+        res = []
+        if t:
+            for it in self.items:
+                if t in it["title"].lower():
+                    res.append({"label": "Блок: " + it["title"], "x": it["x"], "y": it["y"], "w": it["w"], "h": it["h"]})
+            for c in self.board_content:
+                title = c.get("title", "") or ""
+                blob = title
+                if c["type"] == "note": blob += " " + c.get("text", "")
+                elif c["type"] == "list": blob += " " + " ".join(i.get("text","") for i in c.get("items", []))
+                elif c["type"] == "table": blob += " " + " ".join(" ".join(r) for r in c.get("rows", []))
+                if t in blob.lower():
+                    res.append({"label": c["type"] + ": " + (title or "(без названия)"), "x": c["x"], "y": c["y"], "w": c["w"], "h": self._content_h(c)})
+        self._search_results = res
+        self.update()
+
+    def _goto(self, r):
+        W, H = self.width(), self.height()
+        tz = max(0.5, min(1.5, min(W/(r["w"]+300), H/(r["h"]+300))))
+        self._cam_anim = {"t0": time.time(), "fx": self.cam_x, "fy": self.cam_y, "fz": self.zoom,
+                          "tx": W/2 - (r["x"]+r["w"]/2)*tz, "ty": H/2 - (r["y"]+r["h"]/2)*tz, "tz": tz}
+        self._close_search()
+        self.update()
+
+    def _draw_search(self, p, W, s):
+        if not self._search_edit: return
+        txt = self._search_edit.text().strip().lower()
+        self._search_btns = []
+        if not txt or not self._search_results: return
+        bw = 420*s
+        bx = W/2 - bw/2
+        by = self._search_edit.geometry().bottom() + 6
+        n = min(8, len(self._search_results))
+        rh = 26*s
+        self._rrect(p, bx, by, bw, n*rh + 8*s, 10*s, fill=self.P["panel"], outline=self.P["panel_out"])
+        for i in range(n):
+            r = self._search_results[i]
+            yy = by + 4*s + i*rh
+            self._search_btns.append({"x": bx, "y": yy, "w": bw, "h": rh, "r": r})
+            p.setFont(self.font(10*s)); p.setPen(QColor(self.P["text"])); p.setBrush(Qt.NoBrush)
+            p.drawText(QRectF(bx+10*s, yy, bw-20*s, rh), Qt.AlignLeft|Qt.AlignVCenter,
+                       self.trunc(r["label"], bw-20*s, 10*s))
+
+    # ---------- иммерсив ----------
     def _draw_imm(self, p):
         pr, hdr, tb, area = self._imm_rects()
         it = self.opened
@@ -2152,6 +2301,7 @@ class Board(QWidget):
     def _pick_color(self):
         c = QColorDialog.getColor(QColor(self.brush_color), self)
         if c.isValid(): self.brush_color = c.name(); self.update()
+
     def _pick_imm_color(self):
         c = QColorDialog.getColor(QColor(self.imm_color), self)
         if c.isValid(): self.imm_color = c.name(); self.update()
