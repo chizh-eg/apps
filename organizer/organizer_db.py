@@ -178,4 +178,14 @@ class Database:
                 "ADD COLUMN my_subgroup INTEGER NOT NULL DEFAULT 0"
             )
 
+        if "att_start" not in set_cols:
+            self.conn.execute(
+                "ALTER TABLE settings ADD COLUMN att_start TEXT"
+            )
+
+        if "att_end" not in set_cols:
+            self.conn.execute(
+                "ALTER TABLE settings ADD COLUMN att_end TEXT"
+            )
+
         self.conn.commit()

@@ -7,7 +7,7 @@ from library_tab import LibraryTab
 from week_overview_tab import WeekOverviewTab
 from assignments_material_tab import AssignmentsMaterialTab
 from files_material_tab import FilesMaterialTab
-from week_grid_tab import WeekGridTab
+from week_grid_tab import WeekGridTab, RoundedCard, RoundedTable
 from icons import make_icon
 
 from PySide6.QtWidgets import (
@@ -38,9 +38,10 @@ from PySide6.QtWidgets import (
     QMenu,
     QFrame,
     QStackedWidget,
+    QTableView,
 )
-from PySide6.QtCore import Qt, QUrl, QFileInfo, QSize, Signal, QDate, QPropertyAnimation, QEasingCurve, QVariantAnimation
-from PySide6.QtGui import QDesktopServices, QPixmap, QColor, QBrush, QPainter, QPen, QPainterPath
+from PySide6.QtCore import Qt, QUrl, QFileInfo, QSize, Signal, QDate, QPropertyAnimation, QEasingCurve, QVariantAnimation, QEvent, QTimer
+from PySide6.QtGui import QDesktopServices, QPixmap, QColor, QBrush, QPainter, QPen, QPainterPath, QPalette
 
 try:
     from PySide6.QtPdfWidgets import QPdfView
@@ -727,6 +728,15 @@ QTableWidget#schedPreview QHeaderView::section {
     border-right: 1px solid #C7D7EC;
     border-bottom: 1px solid #C7D7EC;
 }
+
+/* Меню без скруглений углов */
+QMenu {
+    border-radius: 0px;
+}
+
+QMenu::item {
+    border-radius: 0px;
+}
 """
 
 # ===== Генерация вспомогательных иконок =====
@@ -964,6 +974,171 @@ QCalendarWidget QAbstractItemView {
 """
 
     return extra
+
+def _make_arrow_png(path: Path, angle: float):
+    pm = QPixmap(24, 24)
+    pm.fill(Qt.GlobalColor.transparent)
+
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    p.translate(12, 12)
+    p.rotate(angle)
+
+    pen = QPen(QColor("#0B3B7A"))
+    pen.setWidthF(3.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+
+    arrow = QPainterPath()
+    arrow.moveTo(-6, -2)
+    arrow.lineTo(0, 4)
+    arrow.lineTo(6, -2)
+
+    p.drawPath(arrow)
+    p.end()
+
+    pm.save(str(path))
+
+
+def build_scrollbar_qss() -> str:
+    icons_dir = Path.home() / ".semester_organizer" / "icons"
+    icons_dir.mkdir(parents=True, exist_ok=True)
+
+    arrows = {}
+
+    for name, angle in (
+        ("down", 0.0),
+        ("left", 90.0),
+        ("up", 180.0),
+        ("right", 270.0),
+    ):
+        path = icons_dir / f"arrow_{name}.png"
+
+        if not path.exists():
+            _make_arrow_png(path, angle)
+
+        arrows[name] = path
+
+    return f"""
+/* ===== Таблица посещаемости: цветные ячейки работают,
+     потому что нет правил ::item ===== */
+QTableWidget#attendGrid {{
+    background: transparent;
+    border: none;
+    gridline-color: #E4E9F0;
+}}
+
+QTableWidget#attendGrid QHeaderView::section {{
+    background-color: #DCE9FA;
+    color: #0B3B7A;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 8px 6px;
+    border: none;
+    border-right: 1px solid #C7D7EC;
+    border-bottom: 1px solid #C7D7EC;
+}}
+
+/* ===== Скроллбары со стрелками в общем стиле ===== */
+QScrollBar:vertical {{
+    background: #EDF0F5;
+    width: 16px;
+    border-radius: 8px;
+}}
+
+QScrollBar:horizontal {{
+    background: #EDF0F5;
+    height: 16px;
+    border-radius: 8px;
+}}
+
+QScrollBar::handle:vertical {{
+    background: #B9C8DC;
+    border-radius: 6px;
+    min-height: 24px;
+    margin: 2px;
+}}
+
+QScrollBar::handle:horizontal {{
+    background: #B9C8DC;
+    border-radius: 6px;
+    min-width: 24px;
+    margin: 2px;
+}}
+
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {{
+    background: #8FA6C0;
+}}
+
+QScrollBar::add-line:vertical {{
+    height: 18px;
+    subcontrol-position: bottom;
+}}
+
+QScrollBar::sub-line:vertical {{
+    height: 18px;
+    subcontrol-position: top;
+}}
+
+QScrollBar::add-line:horizontal {{
+    width: 18px;
+    subcontrol-position: right;
+}}
+
+QScrollBar::sub-line:horizontal {{
+    width: 18px;
+    subcontrol-position: left;
+}}
+
+QScrollBar::up-arrow:vertical {{
+    image: url({arrows['up']});
+    width: 12px;
+    height: 12px;
+}}
+
+QScrollBar::down-arrow:vertical {{
+    image: url({arrows['down']});
+    width: 12px;
+    height: 12px;
+}}
+
+QScrollBar::left-arrow:horizontal {{
+    image: url({arrows['left']});
+    width: 12px;
+    height: 12px;
+}}
+
+QScrollBar::right-arrow:horizontal {{
+    image: url({arrows['right']});
+    width: 12px;
+    height: 12px;
+}}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {{
+    background: transparent;
+}}
+
+/* Убираем старые "квадратики" под стрелками */
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {{
+    background: transparent;
+    border: none;
+}}
+
+/* Более плавный ползунок */
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {{
+    margin: 1px;
+}}
+"""
 
 class PlaceholderTab(QWidget):
     def __init__(self, title: str, description: str, parent=None):
@@ -1355,17 +1530,20 @@ class AttendanceTab(QWidget):
         super().__init__(parent)
 
         self.db = db
+        self.table = None   # таблица появится в _build_ui
+
         self._build_ui()
         self.rebuild()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 18, 24, 18)
+        layout.setSpacing(14)
 
         controls = QHBoxLayout()
 
         self.date_start = QDateEdit()
         self.date_end = QDateEdit()
-
         self.date_start.setCalendarPopup(True)
         self.date_end.setCalendarPopup(True)
 
@@ -1373,7 +1551,34 @@ class AttendanceTab(QWidget):
         self.date_start.setDate(today.addDays(-30))
         self.date_end.setDate(today.addDays(30))
 
+        # Восстанавливаем сохранённый диапазон
+        rows = self.db.query(
+            "SELECT att_start, att_end FROM settings WHERE id = 1"
+        )
+
+        if rows:
+            saved_start = rows[0]["att_start"]
+            saved_end = rows[0]["att_end"]
+
+            if saved_start:
+                d = QDate.fromString(saved_start, "yyyy-MM-dd")
+                if d.isValid():
+                    self.date_start.setDate(d)
+
+            if saved_end:
+                d = QDate.fromString(saved_end, "yyyy-MM-dd")
+                if d.isValid():
+                    self.date_end.setDate(d)
+
+        self.date_start.setObjectName("toolbarDate")
+        self.date_end.setObjectName("toolbarDate")
+        self.date_start.setFixedWidth(200)
+        self.date_end.setFixedWidth(200)
+        self.date_start.installEventFilter(self)
+        self.date_end.installEventFilter(self)
+
         self.btn_build = QPushButton("Построить сетку")
+        self.btn_build.setObjectName("toolbarButton")
 
         controls.addWidget(QLabel("Начало"))
         controls.addWidget(self.date_start)
@@ -1382,27 +1587,50 @@ class AttendanceTab(QWidget):
         controls.addWidget(self.btn_build)
         controls.addStretch(1)
 
+        layout.addLayout(controls)
+
         self.lbl_info = QLabel(
             "По умолчанию все запланированные пары считаются посещёнными. "
-            "Правый клик по ячейке — отметить пропуск, отмену, перенос или доп. пару."
+            "Правый клик по ячейке (или по нескольким выделенным) — отметить "
+            "пропуск, отмену, перенос или доп. пару. "
+            "Будущие даты остаются пустыми до наступления дня."
         )
         self.lbl_info.setWordWrap(True)
-        self.lbl_info.setStyleSheet("color: #AFCBEE;")
-
-        layout.addLayout(controls)
+        self.lbl_info.setStyleSheet("color: #5F6368;")
         layout.addWidget(self.lbl_info)
 
-        self.table = QTableWidget()
+        # ===== Таблица в скруглённой карточке, как в «Обзоре» =====
+        self.table_card = RoundedCard(radius=18)
+        card_layout = QVBoxLayout(self.table_card)
+        card_layout.setContentsMargins(8, 8, 8, 8)
+
+        self.table = RoundedTable(radius=12)
+        self.table.setObjectName("attendGrid")
+
+        pal = self.table.palette()
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#4A7FD4"))
+        pal.setColor(
+            QPalette.ColorRole.HighlightedText, QColor("#FFFFFF")
+        )
+        self.table.setPalette(pal)
+
+        self.table.viewport().installEventFilter(self)
+
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectItems
         )
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
-        self.table.customContextMenuRequested.connect(self.show_context_menu)
+        self.table.customContextMenuRequested.connect(
+            self.show_context_menu
+        )
 
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Fixed
@@ -1410,10 +1638,32 @@ class AttendanceTab(QWidget):
         self.table.verticalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Fixed
         )
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.horizontalHeader().setDefaultSectionSize(40)
 
-        layout.addWidget(self.table)
+        card_layout.addWidget(self.table)
+        layout.addWidget(self.table_card, 1)
 
         self.btn_build.clicked.connect(self.rebuild)
+        self.date_start.dateChanged.connect(
+            lambda d: self._save_range()
+        )
+        self.date_end.dateChanged.connect(
+            lambda d: self._save_range()
+        )
+
+    def _save_range(self):
+        self.db.execute(
+            """
+            UPDATE settings
+            SET att_start = ?, att_end = ?
+            WHERE id = 1
+            """,
+            (
+                self.date_start.date().toString("yyyy-MM-dd"),
+                self.date_end.date().toString("yyyy-MM-dd"),
+            ),
+        )
 
     def parity_for_date(self, date: QDate) -> str:
         rows = self.db.query(
@@ -1421,11 +1671,13 @@ class AttendanceTab(QWidget):
         )
 
         ref_str = None
+
         if rows and rows[0]["numerator_reference"]:
             ref_str = rows[0]["numerator_reference"]
 
         if ref_str:
             ref = QDate.fromString(ref_str, "yyyy-MM-dd")
+
             if ref.isValid():
                 monday = date.addDays(-(date.dayOfWeek() - 1))
                 ref_monday = ref.addDays(-(ref.dayOfWeek() - 1))
@@ -1434,8 +1686,33 @@ class AttendanceTab(QWidget):
 
                 return "numerator" if weeks % 2 == 0 else "denominator"
 
-        # Пока опорная дата числителя не задана, считаем все недели числителем.
         return "numerator"
+
+    def color_for_status(self, status: str, scheduled: bool):
+        """
+        Возвращает пару (фон, текст).
+        ВАЖНО: зелёный только для реального статуса "attended",
+        будущие даты — белые и пустые.
+        """
+        if status == "missed":
+            return QColor("#FCE8E6"), QColor("#C5221F")
+
+        if status == "canceled":
+            return QColor("#E8EAED"), QColor("#5F6368")
+
+        if status == "transferred":
+            return QColor("#FEF7E0"), QColor("#B06000")
+
+        if status == "extra":
+            return QColor("#E0F7FA"), QColor("#007B8A")
+
+        if status == "future":
+            return QColor("#FFFFFF"), QColor("#9AA0A6")
+
+        if status == "attended" and scheduled:
+            return QColor("#E6F4EA"), QColor("#137333")
+
+        return QColor("#FFFFFF"), QColor("#5F6368")
 
     def rebuild(self):
         start = self.date_start.date()
@@ -1464,6 +1741,8 @@ class AttendanceTab(QWidget):
             dates.append(d)
             d = d.addDays(1)
 
+        today = QDate.currentDate()
+
         self.table.clear()
         self.table.setRowCount(len(subjects))
         self.table.setColumnCount(len(dates))
@@ -1491,6 +1770,7 @@ class AttendanceTab(QWidget):
 
                 scheduled = bool(sched and sched[0]["c"] > 0)
 
+                # 1) Сначала ищем ручную отметку — она всегда в приоритете
                 marks = self.db.query(
                     """
                     SELECT status
@@ -1504,8 +1784,11 @@ class AttendanceTab(QWidget):
                     (date_iso, subject["id"]),
                 )
 
+                # 2) Потом определяем статус по дате
                 if marks:
                     status = marks[0]["status"]
+                elif dt > today:
+                    status = "future"
                 else:
                     status = "attended" if scheduled else "none"
 
@@ -1513,14 +1796,14 @@ class AttendanceTab(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, date_iso)
                 item.setData(Qt.ItemDataRole.UserRole + 1, subject["id"])
                 item.setData(Qt.ItemDataRole.UserRole + 2, status)
-
                 item.setFlags(
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 )
 
-                color = self.color_for_status(status, scheduled)
-                item.setBackground(QBrush(color))
-                item.setForeground(QBrush(QColor(226, 235, 249)))
+                bg, fg = self.color_for_status(status, scheduled)
+                item.setBackground(QBrush(bg))
+                item.setForeground(QBrush(fg))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
                 if status == "missed":
                     item.setText("Н")
@@ -1530,47 +1813,49 @@ class AttendanceTab(QWidget):
                     item.setText("П")
                 elif status == "extra":
                     item.setText("Д")
-                elif scheduled:
+                elif status == "attended" and scheduled:
                     item.setText("+")
+                else:
+                    item.setText("")
 
                 self.table.setItem(row, col, item)
 
         for col in range(len(dates)):
-            self.table.setColumnWidth(col, 38)
-
-    def color_for_status(self, status: str, scheduled: bool) -> QColor:
-        if status == "missed":
-            return QColor(94, 39, 47)
-
-        if status == "canceled":
-            return QColor(56, 63, 76)
-
-        if status == "transferred":
-            return QColor(92, 80, 37)
-
-        if status == "extra":
-            return QColor(30, 76, 91)
-
-        if status == "attended" or scheduled:
-            return QColor(34, 67, 108)
-
-        return QColor(21, 28, 41)
+            self.table.setColumnWidth(col, 48)
 
     def show_context_menu(self, pos):
-        item = self.table.itemAt(pos)
-        if not item:
+        items = self.table.selectedItems()
+
+        if not items:
+            single = self.table.itemAt(pos)
+            items = [single] if single else []
+
+        targets = []
+
+        for it in items:
+            targets.append(
+                (
+                    it.data(Qt.ItemDataRole.UserRole),
+                    it.data(Qt.ItemDataRole.UserRole + 1),
+                )
+            )
+
+        targets = list(dict.fromkeys(targets))
+
+        if not targets:
             return
 
-        date_iso = item.data(Qt.ItemDataRole.UserRole)
-        subject_id = item.data(Qt.ItemDataRole.UserRole + 1)
-
         menu = QMenu(self)
+
+        if len(targets) > 1:
+            info = menu.addAction(f"Ячеек выделено: {len(targets)}")
+            info.setEnabled(False)
 
         def add_action(title: str, status: str):
             action = menu.addAction(title)
             action.triggered.connect(
-                lambda checked=False, s=status: self.set_status(
-                    date_iso, subject_id, s
+                lambda checked=False, s=status: self.set_status_many(
+                    targets, s
                 )
             )
 
@@ -1582,29 +1867,88 @@ class AttendanceTab(QWidget):
 
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
-    def set_status(self, date_iso: str, subject_id: int, status: str):
-        self.db.execute(
-            """
-            DELETE FROM attendance_marks
-            WHERE date = ?
-              AND subject_id = ?
-              AND slot_id IS NULL
-            """,
-            (date_iso, subject_id),
-        )
-
-        if status != "default":
+    def set_status_many(self, targets, status: str):
+        for date_iso, subject_id in targets:
             self.db.execute(
                 """
-                INSERT INTO attendance_marks
-                    (date, subject_id, slot_id, status, note)
-                VALUES (?, ?, NULL, ?, ?)
+                DELETE FROM attendance_marks
+                WHERE date = ?
+                  AND subject_id = ?
+                  AND slot_id IS NULL
                 """,
-                (date_iso, subject_id, status, ""),
+                (date_iso, subject_id),
             )
+
+            if status != "default":
+                self.db.execute(
+                    """
+                    INSERT INTO attendance_marks
+                    (date, subject_id, slot_id, status, note)
+                    VALUES (?, ?, NULL, ?, ?)
+                    """,
+                    (date_iso, subject_id, status, ""),
+                )
 
         self.rebuild()
 
+    def eventFilter(self, obj, event):
+        # Пока вкладка строится, таблицы ещё может не быть
+        if (
+            self.table is not None
+            and obj is self.table.viewport()
+            and event.type() == QEvent.Type.Wheel
+        ):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                return False
+
+            sb = self.table.horizontalScrollBar()
+
+            delta = event.angleDelta().y()
+            if delta == 0:
+                delta = event.angleDelta().x()
+
+            sb.setValue(sb.value() - delta // 4)
+            return True
+
+        # Клик по полю даты → стилизуем всплывающий календарь
+        if (
+            obj in (self.date_start, self.date_end)
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            QTimer.singleShot(0, self._patch_calendar_popup)
+
+        return super().eventFilter(obj, event)
+
+    def _patch_calendar_popup(self):
+        # Стилизуем календари обоих полей —
+        # тогда открывшийся календарь гарантированно светлый
+        for date_edit in (self.date_start, self.date_end):
+            cal = date_edit.findChild(QCalendarWidget)
+
+            if cal is not None:
+                self._apply_calendar_palette(cal)
+
+    def _apply_calendar_palette(self, cal):
+        pal = cal.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#FFFFFF"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#1A1C1E"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#FFFFFF"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#1A1C1E"))
+        pal.setColor(QPalette.ColorRole.Button, QColor("#E8EDF5"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#1A1C1E"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#D3E3FD"))
+        pal.setColor(
+            QPalette.ColorRole.HighlightedText, QColor("#001D35")
+        )
+        pal.setColor(QPalette.ColorRole.BrightText, QColor("#FFFFFF"))
+        cal.setPalette(pal)
+
+        view = cal.findChild(QTableView)
+
+        if view is not None:
+            view.setPalette(pal)
+            view.verticalHeader().setDefaultSectionSize(38)
+            view.horizontalHeader().setPalette(pal)
 
 class CalendarTab(QWidget):
     def __init__(self, parent=None):
@@ -1925,7 +2269,9 @@ if __name__ == "__main__":
 
     # Добавочный QSS (иконки-стрелки, галочка, чипы) —
     # только после создания QApplication!
-    LONGHORN_QSS = LONGHORN_QSS + build_extra_qss()
+    LONGHORN_QSS = (
+        LONGHORN_QSS + build_extra_qss() + build_scrollbar_qss()
+    )
 
     app.setStyleSheet(LONGHORN_QSS)
 
