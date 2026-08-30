@@ -60,6 +60,14 @@ KIND_CHIP_STYLES = {
 
 DONE_CHIP_STYLE = ("#E6F4EA", "#137333")
 
+# Цвета типов пар в текстовом режиме
+TEXT_TYPE_COLORS = {
+    "lecture": "#137333",     # зелёный
+    "practice": "#D93025",    # красный
+    "lab": "#E8710A",         # оранжевый
+    "other": "#1A73E8",       # синий
+}
+
 COLOR_EMPTY = "#FAFBFC"
 COLOR_NORMAL = "#FFFFFF"
 
@@ -70,7 +78,6 @@ TODAY_BORDER_WIDTH = 3.0
 def make_chip(icon: str, text: str, bg: str, fg: str) -> QLabel:
     chip = QLabel(f"{icon} {text}" if icon else text)
     chip.setObjectName("cellChip")
-
     chip.setWordWrap(True)
     chip.setAlignment(
         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -79,7 +86,6 @@ def make_chip(icon: str, text: str, bg: str, fg: str) -> QLabel:
         QSizePolicy.Policy.Expanding,
         QSizePolicy.Policy.Minimum,
     )
-
     chip.setStyleSheet(
         f"background-color: {bg};"
         f"color: {fg};"
@@ -88,7 +94,6 @@ def make_chip(icon: str, text: str, bg: str, fg: str) -> QLabel:
         "font-weight: 700;"
         "font-size: 14px;"
     )
-
     return chip
 
 
@@ -149,7 +154,9 @@ class BorderOverlay(QWidget):
 
         rect = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
 
-        p.drawRoundedRect(rect, max(self._radius - 2, 4), max(self._radius - 2, 4))
+        p.drawRoundedRect(
+            rect, max(self._radius - 2, 4), max(self._radius - 2, 4)
+        )
 
 
 class ColumnBorderOverlay(QWidget):
@@ -335,7 +342,7 @@ class WeekGridTab(QWidget):
         self.date_edit.setObjectName("toolbarDate")
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd.MM.yyyy")
-        self.date_edit.setFixedWidth(160)
+        self.date_edit.setFixedWidth(200)
 
         self._apply_date_arrow_style()
         self.date_edit.installEventFilter(self)
@@ -357,6 +364,46 @@ class WeekGridTab(QWidget):
 
         layout.addLayout(top)
 
+        # ===== Панель вида =====
+        opts = QHBoxLayout()
+        opts.setSpacing(8)
+
+        self.btn_text_view = QPushButton("📄 Текстовый вид")
+        self.btn_text_view.setObjectName("toolbarButton")
+        self.btn_text_view.setCheckable(True)
+        self.btn_text_view.setToolTip(
+            "Переключение между текстовым видом и цветными чипами"
+        )
+
+        self.btn_sunday = QPushButton("📆 Воскресенье")
+        self.btn_sunday.setObjectName("toolbarButton")
+        self.btn_sunday.setCheckable(True)
+        self.btn_sunday.setChecked(True)
+        self.btn_sunday.setToolTip("Показать / скрыть воскресенье")
+
+        opts.addWidget(self.btn_text_view)
+        opts.addWidget(self.btn_sunday)
+        opts.addStretch(1)
+
+        layout.addLayout(opts)
+
+        # Восстанавливаем сохранённые настройки вида
+        rows = self.db.query(
+            """
+            SELECT overview_text_view, overview_show_sunday
+            FROM settings
+            WHERE id = 1
+            """
+        )
+
+        if rows:
+            self.btn_text_view.setChecked(
+                bool(rows[0]["overview_text_view"])
+            )
+            self.btn_sunday.setChecked(
+                bool(rows[0]["overview_show_sunday"])
+            )
+
         # ===== Таблица в скруглённой карточке =====
         self.table_card = RoundedCard(radius=18)
         self.table_card.setObjectName("tableCard")
@@ -366,7 +413,6 @@ class WeekGridTab(QWidget):
 
         self.table = RoundedTable(radius=12)
         self.table.setObjectName("weekGrid")
-
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         self.table.setEditTriggers(
@@ -395,7 +441,6 @@ class WeekGridTab(QWidget):
         self.table.setShowGrid(True)
 
         card_layout.addWidget(self.table)
-
         layout.addWidget(self.table_card, 1)
 
         # ===== Оверлеи =====
@@ -412,7 +457,6 @@ class WeekGridTab(QWidget):
         self.table.horizontalScrollBar().valueChanged.connect(
             lambda value: self._update_overlays_geometry()
         )
-
         self.table.verticalScrollBar().valueChanged.connect(
             lambda value: self._update_overlays_geometry()
         )
@@ -429,17 +473,62 @@ class WeekGridTab(QWidget):
         self.btn_today.clicked.connect(
             lambda checked=False: self.go_today()
         )
-
         self.date_edit.dateChanged.connect(
             lambda d: self.on_date_changed(d)
+        )
+
+        self.btn_text_view.toggled.connect(self._on_text_view_toggled)
+        self.btn_sunday.toggled.connect(self._on_sunday_toggled)
+
+        # Применяем синий стиль кнопки, если текстовый вид был сохранён
+        self._apply_text_view_button_style(
+            self.btn_text_view.isChecked()
         )
 
         self.table.doubleClicked.connect(
             lambda index: self.on_double_click(index)
         )
-
         self.table.customContextMenuRequested.connect(
             lambda pos: self.show_context_menu(pos)
+        )
+
+    # ===== Переключатель текстового вида =====
+
+    def _on_text_view_toggled(self, checked: bool):
+        self._apply_text_view_button_style(checked)
+        self._save_view_settings()
+        self.refresh()
+
+    def _apply_text_view_button_style(self, checked: bool):
+        if checked:
+            # Включён: синий фон, белый текст
+            self.btn_text_view.setStyleSheet(
+                "QPushButton {"
+                " background-color: #0061A4;"
+                " color: #FFFFFF;"
+                " border: 1px solid #004A7F;"
+                "}"
+                "QPushButton:hover { background-color: #1A73E8; }"
+            )
+        else:
+            # Выключен: обычный стиль toolbarButton
+            self.btn_text_view.setStyleSheet("")
+
+    def _on_sunday_toggled(self, checked: bool):
+        self._save_view_settings()
+        self.refresh()
+
+    def _save_view_settings(self):
+        self.db.execute(
+            """
+            UPDATE settings
+            SET overview_text_view = ?, overview_show_sunday = ?
+            WHERE id = 1
+            """,
+            (
+                1 if self.btn_text_view.isChecked() else 0,
+                1 if self.btn_sunday.isChecked() else 0,
+            ),
         )
 
     # ===== Стрелка у даты =====
@@ -462,7 +551,6 @@ class WeekGridTab(QWidget):
                 border-radius: 13px;
                 margin: 5px 6px;
             }}
-
             QDateEdit::down-arrow {{
                 border: none;
                 image: url({chevron_path});
@@ -475,7 +563,10 @@ class WeekGridTab(QWidget):
     # ===== Календарь =====
 
     def eventFilter(self, obj, event):
-        if obj is self.date_edit and event.type() == QEvent.Type.MouseButtonPress:
+        if (
+            obj is self.date_edit
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
             QTimer.singleShot(0, self._patch_calendar_popup)
 
         return super().eventFilter(obj, event)
@@ -487,7 +578,6 @@ class WeekGridTab(QWidget):
             return
 
         pal = cal.palette()
-
         pal.setColor(QPalette.ColorRole.Window, QColor("#FFFFFF"))
         pal.setColor(QPalette.ColorRole.WindowText, QColor("#1A1C1E"))
         pal.setColor(QPalette.ColorRole.Base, QColor("#FFFFFF"))
@@ -495,9 +585,10 @@ class WeekGridTab(QWidget):
         pal.setColor(QPalette.ColorRole.Button, QColor("#E8EDF5"))
         pal.setColor(QPalette.ColorRole.ButtonText, QColor("#1A1C1E"))
         pal.setColor(QPalette.ColorRole.Highlight, QColor("#D3E3FD"))
-        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#001D35"))
+        pal.setColor(
+            QPalette.ColorRole.HighlightedText, QColor("#001D35")
+        )
         pal.setColor(QPalette.ColorRole.BrightText, QColor("#FFFFFF"))
-
         cal.setPalette(pal)
 
         view = cal.findChild(QTableView)
@@ -537,7 +628,6 @@ class WeekGridTab(QWidget):
 
     def go_today(self):
         self._cell_overlay.cell = None
-
         self.today_highlight = True
 
         today = QDate.currentDate()
@@ -551,7 +641,6 @@ class WeekGridTab(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-
         QTimer.singleShot(0, self._adjust_row_heights)
 
     def refresh(self):
@@ -561,7 +650,8 @@ class WeekGridTab(QWidget):
         sunday = monday.addDays(6)
 
         self.lbl_week.setText(
-            f"{monday.toString('dd.MM.yyyy')} — {sunday.toString('dd.MM.yyyy')}"
+            f"{monday.toString('dd.MM.yyyy')} — "
+            f"{sunday.toString('dd.MM.yyyy')}"
         )
 
         week_parity = parity_for_date(self.db, monday)
@@ -581,8 +671,11 @@ class WeekGridTab(QWidget):
         self.date_edit.setDate(self.date_edit.date().addDays(days))
 
     def build_grid(self, monday: QDate):
-        dates = [monday.addDays(i) for i in range(7)]
+        days_count = 7 if self.btn_sunday.isChecked() else 6
+        dates = [monday.addDays(i) for i in range(days_count)]
         self._current_dates = dates
+
+        text_mode = self.btn_text_view.isChecked()
 
         row_keys = []
         added_keys = set()
@@ -628,6 +721,7 @@ class WeekGridTab(QWidget):
                     added_keys.add(key)
                     row_keys.append(key)
 
+        # Перенесённые пары из заданий
         for col, date in enumerate(dates):
             date_iso = date.toString("yyyy-MM-dd")
 
@@ -684,17 +778,17 @@ class WeekGridTab(QWidget):
 
         horizontal_labels = [
             f"{WEEKDAYS_SHORT[i]} {dates[i].toString('dd.MM')}"
-            for i in range(7)
+            for i in range(len(dates))
         ]
 
         vertical_labels = [
-            f"{lesson}. {start}\n—\n{end}"
+            f"{lesson} пара\n{start}\n—\n{end}"
             for lesson, start, end in row_keys
         ]
 
         self.table.clear()
         self.table.setRowCount(len(row_keys))
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(len(dates))
 
         self.table.setHorizontalHeaderLabels(horizontal_labels)
         self.table.setVerticalHeaderLabels(vertical_labels)
@@ -717,7 +811,6 @@ class WeekGridTab(QWidget):
                 item.setFlags(
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 )
-
                 item.setData(Qt.ItemDataRole.UserRole, date_iso)
 
                 cell_slots = slots_by_key.get(key, [])
@@ -728,114 +821,18 @@ class WeekGridTab(QWidget):
                     ",".join(slot_ids),
                 )
 
+                widget = None
                 assignment_ids = []
-                tooltips = []
 
-                card = QFrame()
-                card.setObjectName("cellCard")
-                card.setAttribute(
-                    Qt.WidgetAttribute.WA_TransparentForMouseEvents
-                )
-
-                card_layout = QVBoxLayout(card)
-                card_layout.setContentsMargins(6, 6, 6, 6)
-                card_layout.setSpacing(4)
-
-                for slot in cell_slots:
-                    icon, bg, fg = SUBJECT_CHIP
-                    card_layout.addWidget(
-                        make_chip(icon, slot["subject_name"], bg, fg)
-                    )
-
-                    type_label = LESSON_TYPE_LABELS.get(
-                        slot["lesson_type"], ""
-                    )
-
-                    if type_label:
-                        type_icon = LESSON_TYPE_ICONS.get(
-                            slot["lesson_type"], "📌"
+                if cell_slots:
+                    if text_mode:
+                        widget, assignment_ids = self._make_text_cell(
+                            date_iso, cell_slots
                         )
-                        card_layout.addWidget(
-                            make_chip(
-                                type_icon, type_label, "#E8F0FE", "#174EA6"
-                            )
+                    else:
+                        widget, assignment_ids = self._make_chip_cell(
+                            date_iso, cell_slots
                         )
-
-                    if slot["subgroup"]:
-                        card_layout.addWidget(
-                            make_chip(
-                                "👥",
-                                f"подгруппа {slot['subgroup']}",
-                                "#F1F3F6",
-                                "#3C4043",
-                            )
-                        )
-                    if slot["teacher"]:
-                        icon, bg, fg = TEACHER_CHIP
-                        card_layout.addWidget(
-                            make_chip(icon, slot["teacher"], bg, fg)
-                        )
-
-                    if slot["room"]:
-                        icon, bg, fg = ROOM_CHIP
-                        card_layout.addWidget(
-                            make_chip(icon, slot["room"], bg, fg)
-                        )
-
-                    assignments = self.db.query(
-                        """
-                        SELECT
-                            a.*,
-                            (
-                                SELECT COUNT(*)
-                                FROM assignment_files f
-                                WHERE f.assignment_id = a.id
-                            ) AS files_count
-                        FROM assignments a
-                        WHERE a.date = ?
-                          AND a.slot_id = ?
-                        ORDER BY a.kind, a.title
-                        """,
-                        (date_iso, slot["id"]),
-                    )
-
-                    for assignment in assignments:
-                        assignment_ids.append(assignment["id"])
-
-                        kind = assignment["kind"]
-
-                        icon, bg, fg = KIND_CHIP_STYLES.get(
-                            kind,
-                            KIND_CHIP_STYLES["other"],
-                        )
-
-                        if assignment["done"]:
-                            bg, fg = DONE_CHIP_STYLE
-                            icon = "✔"
-
-                        title = (
-                            assignment["title"]
-                            or KIND_LABELS.get(kind, kind)
-                        )
-
-                        if assignment["files_count"]:
-                            title += f" 📎{assignment['files_count']}"
-
-                        card_layout.addWidget(
-                            make_chip(icon, title, bg, fg)
-                        )
-
-                        if assignment["description"]:
-                            tooltips.append(
-                                f"{KIND_LABELS.get(kind, kind)}: "
-                                f"{assignment['title']}\n"
-                                f"{assignment['description']}"
-                            )
-
-                card_layout.addStretch(1)
-
-                if tooltips:
-                    card.setToolTip("\n\n".join(tooltips))
 
                 item.setData(
                     Qt.ItemDataRole.UserRole + 2,
@@ -851,11 +848,203 @@ class WeekGridTab(QWidget):
 
                 self.table.setItem(row, col, item)
 
-                if cell_slots:
-                    self.table.setCellWidget(row, col, card)
+                if widget is not None:
+                    self.table.setCellWidget(row, col, widget)
 
         QTimer.singleShot(0, self._adjust_row_heights)
         QTimer.singleShot(0, self._update_today_overlay)
+
+    # ===== Ячейка с цветными чипами (старый вид) =====
+
+    def _make_chip_cell(self, date_iso, cell_slots):
+        assignment_ids = []
+        tooltips = []
+
+        card = QFrame()
+        card.setObjectName("cellCard")
+        card.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(6, 6, 6, 6)
+        card_layout.setSpacing(4)
+
+        for slot in cell_slots:
+            icon, bg, fg = SUBJECT_CHIP
+            card_layout.addWidget(
+                make_chip(icon, slot["subject_name"], bg, fg)
+            )
+
+            type_label = LESSON_TYPE_LABELS.get(slot["lesson_type"], "")
+
+            if type_label:
+                type_icon = LESSON_TYPE_ICONS.get(
+                    slot["lesson_type"], "📌"
+                )
+                card_layout.addWidget(
+                    make_chip(type_icon, type_label, "#E8F0FE", "#174EA6")
+                )
+
+            if slot["subgroup"]:
+                card_layout.addWidget(
+                    make_chip(
+                        "👥",
+                        f"подгруппа {slot['subgroup']}",
+                        "#F1F3F6",
+                        "#3C4043",
+                    )
+                )
+
+            if slot["teacher"]:
+                icon, bg, fg = TEACHER_CHIP
+                card_layout.addWidget(
+                    make_chip(icon, slot["teacher"], bg, fg)
+                )
+
+            if slot["room"]:
+                icon, bg, fg = ROOM_CHIP
+                card_layout.addWidget(
+                    make_chip(icon, slot["room"], bg, fg)
+                )
+
+            assignments = self.db.query(
+                """
+                SELECT
+                    a.*,
+                    (
+                        SELECT COUNT(*)
+                        FROM assignment_files f
+                        WHERE f.assignment_id = a.id
+                    ) AS files_count
+                FROM assignments a
+                WHERE a.date = ?
+                  AND a.slot_id = ?
+                ORDER BY a.kind, a.title
+                """,
+                (date_iso, slot["id"]),
+            )
+
+            for assignment in assignments:
+                assignment_ids.append(assignment["id"])
+
+                kind = assignment["kind"]
+
+                icon, bg, fg = KIND_CHIP_STYLES.get(
+                    kind, KIND_CHIP_STYLES["other"]
+                )
+
+                if assignment["done"]:
+                    bg, fg = DONE_CHIP_STYLE
+                    icon = "✔"
+
+                title = (
+                    assignment["title"] or KIND_LABELS.get(kind, kind)
+                )
+
+                if assignment["files_count"]:
+                    title += f" 📎{assignment['files_count']}"
+
+                card_layout.addWidget(make_chip(icon, title, bg, fg))
+
+                if assignment["description"]:
+                    tooltips.append(
+                        f"{KIND_LABELS.get(kind, kind)}: "
+                        f"{assignment['title']}\n"
+                        f"{assignment['description']}"
+                    )
+
+        card_layout.addStretch(1)
+
+        if tooltips:
+            card.setToolTip("\n".join(tooltips))
+
+        return card, assignment_ids
+
+    # ===== Текстовая ячейка =====
+
+    def _make_text_cell(self, date_iso, cell_slots):
+        assignment_ids = []
+        blocks = []
+
+        for slot in cell_slots:
+            lines = []
+
+            type_label = LESSON_TYPE_LABELS.get(slot["lesson_type"], "")
+            type_color = TEXT_TYPE_COLORS.get(
+                slot["lesson_type"], "#1A1C1E"
+            )
+
+            if type_label:
+                lines.append(
+                    f'<div style="color:{type_color}; font-weight:800;">'
+                    f"{type_label.upper()}"
+                    "</div>"
+                )
+
+            lines.append(
+                f'<div style="color:#1A1C1E;">{slot["subject_name"]}'
+                "</div>"
+            )
+
+            teacher_line = slot["teacher"] or ""
+
+            if slot["subgroup"]:
+                teacher_line += f" ({slot['subgroup']} подгруппа)"
+
+            if teacher_line.strip():
+                lines.append(
+                    f'<div style="color:#137333;">'
+                    f"{teacher_line.strip()}"
+                    "</div>"
+                )
+
+            if slot["room"]:
+                lines.append(
+                    f'<div style="color:#2A5BD7;">{slot["room"]}</div>'
+                )
+
+            assignments = self.db.query(
+                """
+                SELECT a.*
+                FROM assignments a
+                WHERE a.date = ?
+                  AND a.slot_id = ?
+                ORDER BY a.kind, a.title
+                """,
+                (date_iso, slot["id"]),
+            )
+
+            if assignments:
+                for a in assignments:
+                    assignment_ids.append(a["id"])
+
+                if all(a["done"] for a in assignments):
+                    lines.append(
+                        '<div style="color:#137333;">'
+                        "<u>ДЗ выполнено ✔</u></div>"
+                    )
+                else:
+                    lines.append(
+                        '<div style="color:#E8710A;">'
+                        "<u>Есть домашнее задание!</u></div>"
+                    )
+
+            blocks.append("".join(lines))
+
+        label = QLabel("<br>".join(blocks))
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        label.setStyleSheet(
+            "background: transparent; padding: 4px; font-size: 13px;"
+        )
+
+        return label, assignment_ids
+
+    # ===== Высота строк (всегда авто) =====
 
     def _adjust_row_heights(self):
         cols = self.table.columnCount()
@@ -872,13 +1061,22 @@ class WeekGridTab(QWidget):
                 width = self.table.columnWidth(col)
 
                 if width <= 0:
-                    width = max(self.table.viewport().width() // cols, 120)
+                    width = max(
+                        self.table.viewport().width() // max(cols, 1), 120
+                    )
 
                 usable = max(width - 16, 60)
 
                 lay = widget.layout()
 
                 if lay is None:
+                    # Текстовая ячейка (QLabel)
+                    if hasattr(widget, "heightForWidth"):
+                        hh = widget.heightForWidth(usable)
+                    else:
+                        hh = widget.sizeHint().height()
+
+                    needed = max(needed, hh + 8)
                     continue
 
                 lay.activate()
@@ -1019,8 +1217,7 @@ class WeekGridTab(QWidget):
                 assignment = rows[0]
 
                 kind_label = KIND_LABELS.get(
-                    assignment["kind"],
-                    assignment["kind"],
+                    assignment["kind"], assignment["kind"]
                 )
 
                 title = assignment["title"] or kind_label

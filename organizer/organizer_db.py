@@ -172,6 +172,18 @@ class Database:
             for r in self.conn.execute("PRAGMA table_info(settings)")
         ]
 
+        if "overview_text_view" not in set_cols:
+            self.conn.execute(
+                "ALTER TABLE settings "
+                "ADD COLUMN overview_text_view INTEGER NOT NULL DEFAULT 0"
+            )
+
+        if "overview_show_sunday" not in set_cols:
+            self.conn.execute(
+                "ALTER TABLE settings "
+                "ADD COLUMN overview_show_sunday INTEGER NOT NULL DEFAULT 1"
+            )
+
         if "my_subgroup" not in set_cols:
             self.conn.execute(
                 "ALTER TABLE settings "
