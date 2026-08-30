@@ -188,4 +188,21 @@ class Database:
                 "ALTER TABLE settings ADD COLUMN att_end TEXT"
             )
 
+        if "root_path" not in set_cols:
+            self.conn.execute(
+                "ALTER TABLE settings ADD COLUMN root_path TEXT"
+            )
+
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS linked_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                subject_id INTEGER
+                    REFERENCES subjects(id) ON DELETE SET NULL
+            )
+            """
+        )
+
         self.conn.commit()

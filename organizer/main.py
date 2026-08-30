@@ -971,6 +971,49 @@ QCalendarWidget QAbstractItemView {
     selection-color: #001D35;
     font-size: 15px;
 }
+
+/* ===== Файлы: корневая папка и инфо-панель ===== */
+QLabel#rootPathChip {
+    background-color: #FFFFFF;
+    border: 2px solid #7FA7D9;
+    border-radius: 16px;
+    padding: 8px 18px;
+    color: #041E49;
+    font-weight: 700;
+    font-size: 13px;
+}
+
+QLabel#filesInfoLabel {
+    background-color: transparent;
+    color: #1A1C1E;
+    font-size: 13px;
+}
+
+/* ===== Файлы: внутренний обзор и инфо-панель ===== */
+QListWidget#filesList {
+    background-color: #FFFFFF;
+    border: 1px solid #DADCE0;
+    border-radius: 12px;
+}
+
+QLabel#filesInfoName {
+    background: transparent;
+    color: #041E49;
+    font-size: 15px;
+    font-weight: 800;
+}
+
+QLabel#filesInfoDetails {
+    background: transparent;
+    color: #1A1C1E;
+    font-size: 13px;
+}
+
+QLabel#filesInfoPath {
+    background: transparent;
+    color: #5F6368;
+    font-size: 12px;
+}
 """
 
     return extra
@@ -2003,15 +2046,27 @@ class MainWindow(QMainWindow):
         self.data_dir = Path.home() / ".semester_organizer"
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        self.files_root = self.data_dir / "files"
-        self.files_root.mkdir(exist_ok=True)
-
         self.db = Database(self.data_dir / "organizer.db")
+
+        rows = self.db.query(
+            "SELECT root_path FROM settings WHERE id = 1"
+        )
+        root = rows[0]["root_path"] if rows and rows[0]["root_path"] else None
+
+        if not root:
+            root = str(self.data_dir / "files")
+            self.db.execute(
+                "UPDATE settings SET root_path = ? WHERE id = 1",
+                (root,),
+            )
+
+        self.files_root = Path(root)
+        self.files_root.mkdir(parents=True, exist_ok=True)
 
         self.sync_subjects()
 
         # Страницы
-        self.files_tab = FilesTab(self.files_root)
+        self.files_tab = FilesMaterialTab(self.db, self.files_root)
 
         self.attendance_tab = AttendanceTab(self.db)
         self.schedule_tab = ScheduleTab(self.db)
@@ -2243,19 +2298,17 @@ class MainWindow(QMainWindow):
         self.app_title.setVisible(not self.nav_collapsed)
 
     def sync_subjects(self):
-        for path in self.files_root.iterdir():
-            if path.is_dir() and not path.name.startswith("."):
-                self.db.execute(
-                    """
-                    INSERT OR IGNORE INTO subjects (name, folder_name)
-                    VALUES (?, ?)
-                    """,
-                    (path.name, path.name),
-                )
-
-        self.db.commit()
+        pass
 
     def closeEvent(self, event):
+        # Сначала отпускаем PDF-объекты — иначе segfault при выходе
+        cleanup = getattr(self.files_tab, "cleanup_pdf", None)
+        if cleanup is not None:
+            cleanup()
+
+        # Даём событиям deleteLater обработаться до разрушения окон
+        QApplication.processEvents()
+
         self.db.close()
         super().closeEvent(event)
 
